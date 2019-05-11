@@ -32,6 +32,25 @@ mergeInto(LibraryManager.library, {
         }
       };
 
+      Module['catalystsocket'] = {};
+
+      // Add the Event registration mechanism to the exported websocket configuration
+      // object so we can register network callbacks from native JavaScript too.
+      // For more documentation see system/include/emscripten/emscripten.h
+      Module['catalystsocket']._callbacks = {};
+      Module['catalystsocket']['on'] = function(event, callback) {
+        if ('function' === typeof callback) {
+          this._callbacks[event] = callback;
+        }
+        return this;
+      };
+
+      Module['catalystsocket'].emit = function(event, param) {
+        if ('function' === typeof this._callbacks[event]) {
+          this._callbacks[event].call(this, param);
+        }
+      };
+
       // If debug is enabled register simple default logging callbacks for each Event.
 #if SOCKET_DEBUG
       Module['websocket']['on']('error', function(error) {err('Socket error ' + error);});
@@ -60,11 +79,14 @@ mergeInto(LibraryManager.library, {
         peers: {},
         pending: [],
         recv_queue: [],
-#if SOCKET_WEBRTC
-#else
-        sock_ops: SOCKFS.websocket_sock_ops
-#endif
+        catsock: null,
       };
+
+      if (streaming) {
+        sock.sock_ops = SOCKFS.websocket_sock_ops
+      } else {
+        sock.sock_ops = SOCKFS.catalystsocket_sock_ops;
+      }
 
       // create the filesystem node to store the socket structure
       var name = SOCKFS.nextname();
@@ -128,6 +150,83 @@ mergeInto(LibraryManager.library, {
         SOCKFS.nextname.current = 0;
       }
       return 'socket[' + (SOCKFS.nextname.current++) + ']';
+    },
+
+    catalystsocket_socket_ops: {
+      poll: function(sock) {
+        var mask = 0;
+        mask |= ({{{ cDefine('POLLRDNORM') }}} | {{{ cDefine('POLLIN') }}});
+        mask |= {{{ cDefine('POLLOUT') }}};
+        return mask;
+      },
+
+      ioctl: function(sock, request, arg) {
+        switch (request) {
+          case {{{ cDefine('FIONREAD') }}}:
+            var bytes = 0;
+            if (sock.recv_queue.length) {
+              bytes = sock.recv_queue[0].data.length;
+            }
+            {{{ makeSetValue('arg', '0', 'bytes', 'i32') }}};
+            return 0;
+          default:
+            return ERRNO_CODES.EINVAL;
+      },
+
+      close: funcion(sock) {
+        sock.close(); 
+        sock.catsock = null;
+      },
+
+      bind: function(sock, addr, port) {
+        throw new FS.ErrnoError(ERRNO_CODES.EINVAL);  // not supported
+      },
+      
+      connect: function(sock, addr, port) {
+        if (!sock.catsock) {
+          sock.daddr = addr;
+          sock.dport = port;
+          sock.catsock = new CatalystSocket();
+          sock.catsock.onopen = function() {
+            // nothing yet
+          }
+          sock.catsock.onclose = function() {
+            Module['catalystsocket'].emit('close', sock.stream.fd);
+          };
+          sock.catsock.onmessage = function(event) {
+            var data = new Uint8Array(event.data);
+            sock.recv_queue.push(data);
+          }
+          sock.catsock.onerror = function(error) {
+            sock.error = ERRNO_CODES.ECONNREFUSED; // Used in getsockopt for SOL_SOCKET/SO_ERROR test.
+            Module['catalystsocket'].emit('error', [sock.stream.fd, sock.error, 'ECONNREFUSED: Connection refused']);
+          };
+        }
+      },
+
+      listen: function(sock, backlog) {
+        throw new FS.ErrnoError(ERRNO_CODES.EINVAL);  // not supported
+      },
+
+      accept: function(listensock) {
+        throw new FS.ErrnoError(ERRNO_CODES.EINVAL); // not supported
+      },
+
+      sendmsg: function(sock, buffer, offset, length, addr, port) {
+        if (!sock.catsock) {
+          SOCKFS.catalyst_sock_ops.connect(sock, addr, port);
+        }
+        sock.send(new Uint8Array(buffer));
+        return length;
+      },
+      recvmsg: function(sock, length) {
+        var queued = sock.recv_queue.shift();
+        if (queued) {
+          return queued
+        } else {
+          throw new FS.ErrnoError(ERRNO_CODES.EAGAIN);
+        }
+      },
     },
     // backend-specific stream ops
     websocket_sock_ops: {
