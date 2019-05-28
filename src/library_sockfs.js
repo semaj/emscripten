@@ -79,14 +79,15 @@ mergeInto(LibraryManager.library, {
         peers: {},
         pending: [],
         recv_queue: [],
+        send_queue: [],
         catsock: null,
       };
 
-      if (streaming) {
-        sock.sock_ops = SOCKFS.websocket_sock_ops
-      } else {
+      //if (streaming) {
+        //sock.sock_ops = SOCKFS.websocket_sock_ops;
+      //} else {
         sock.sock_ops = SOCKFS.catalystsocket_sock_ops;
-      }
+      //}
 
       // create the filesystem node to store the socket structure
       var name = SOCKFS.nextname();
@@ -152,7 +153,7 @@ mergeInto(LibraryManager.library, {
       return 'socket[' + (SOCKFS.nextname.current++) + ']';
     },
 
-    catalystsocket_socket_ops: {
+    catalystsocket_sock_ops: {
       poll: function(sock) {
         var mask = 0;
         mask |= ({{{ cDefine('POLLRDNORM') }}} | {{{ cDefine('POLLIN') }}});
@@ -171,9 +172,10 @@ mergeInto(LibraryManager.library, {
             return 0;
           default:
             return ERRNO_CODES.EINVAL;
+        }
       },
 
-      close: funcion(sock) {
+      close: function(sock) {
         sock.close(); 
         sock.catsock = null;
       },
@@ -186,9 +188,14 @@ mergeInto(LibraryManager.library, {
         if (!sock.catsock) {
           sock.daddr = addr;
           sock.dport = port;
-          sock.catsock = new CatalystSocket();
+          sock.catsock = new UDPSocket();
           sock.catsock.onopen = function() {
-            // nothing yet
+            console.log("Opened catsock");
+            var queued = sock.send_queue.shift();
+            while (queued) {
+              sock.catsock.send(queued);
+              queued = sock.send_queue.shift();
+            }
           }
           sock.catsock.onclose = function() {
             Module['catalystsocket'].emit('close', sock.stream.fd);
@@ -214,9 +221,13 @@ mergeInto(LibraryManager.library, {
 
       sendmsg: function(sock, buffer, offset, length, addr, port) {
         if (!sock.catsock) {
-          SOCKFS.catalyst_sock_ops.connect(sock, addr, port);
+          SOCKFS.catalystsocket_sock_ops.connect(sock, addr, port);
         }
-        sock.send(new Uint8Array(buffer));
+        if (sock.catsock.readyState != sock.catsock.OPEN) {
+          sock.send_queue.push(new Uint8Array(buffer));
+        } else {
+          sock.catsock.send(new Uint8Array(buffer));
+        }
         return length;
       },
       recvmsg: function(sock, length) {
@@ -226,7 +237,7 @@ mergeInto(LibraryManager.library, {
         } else {
           throw new FS.ErrnoError(ERRNO_CODES.EAGAIN);
         }
-      },
+      }
     },
     // backend-specific stream ops
     websocket_sock_ops: {
