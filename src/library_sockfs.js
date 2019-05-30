@@ -176,7 +176,7 @@ mergeInto(LibraryManager.library, {
       },
 
       close: function(sock) {
-        sock.close(); 
+        sock.catsock.close();
         sock.catsock = null;
       },
 
@@ -190,20 +190,19 @@ mergeInto(LibraryManager.library, {
           sock.dport = port;
           sock.catsock = new UDPSocket();
           sock.catsock.onopen = function() {
-            console.log("Opened catsock");
             var queued = sock.send_queue.shift();
             while (queued) {
               sock.catsock.send(queued);
               queued = sock.send_queue.shift();
             }
-          }
+          };
           sock.catsock.onclose = function() {
             Module['catalystsocket'].emit('close', sock.stream.fd);
           };
           sock.catsock.onmessage = function(event) {
             var data = new Uint8Array(event.data);
             sock.recv_queue.push(data);
-          }
+          };
           sock.catsock.onerror = function(error) {
             sock.error = ERRNO_CODES.ECONNREFUSED; // Used in getsockopt for SOL_SOCKET/SO_ERROR test.
             Module['catalystsocket'].emit('error', [sock.stream.fd, sock.error, 'ECONNREFUSED: Connection refused']);
