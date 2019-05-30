@@ -222,10 +222,15 @@ mergeInto(LibraryManager.library, {
         if (!sock.catsock) {
           SOCKFS.catalystsocket_sock_ops.connect(sock, addr, port);
         }
+        if (ArrayBuffer.isView(buffer)) {
+          offset += buffer.byteOffset;
+          buffer = buffer.buffer;
+        }
+        var msg = new Uint8Array(buffer, offset, length);
         if (sock.catsock.readyState != sock.catsock.OPEN) {
-          sock.send_queue.push(new Uint8Array(buffer));
+          sock.send_queue.push(msg);
         } else {
-          sock.catsock.send(new Uint8Array(buffer));
+          sock.catsock.send(msg);
         }
         return length;
       },
